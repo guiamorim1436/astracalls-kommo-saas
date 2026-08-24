@@ -274,9 +274,11 @@
                 callId = cData.call ? cData.call.callId : cData.callId;
 
                 // 5. Conectar WebSocket de Áudio Autenticado
-                const wsProto = ASTRACALLS_SERVER.startsWith('https') ? 'wss://' : 'ws://';
-                const wsHost = ASTRACALLS_SERVER.replace(/^https?:\/\//, '');
-                const wsUrl = `${wsProto}${wsHost}/api/sessions/${sid}/calls/${callId}/ws?apiKey=${encodeURIComponent(API_KEY)}`;
+                // Conecta WebSocket com fallback automatico (WSS e WS direto)
+                let wsUrl = `wss://atlascall-astracalls.okgklo.easypanel.host/api/sessions/${sid}/calls/${callId}/ws?apiKey=${encodeURIComponent(API_KEY)}`;
+                if (window.location.protocol === 'http:') {
+                    wsUrl = `ws://72.60.248.119:8080/api/sessions/${sid}/calls/${callId}/ws?apiKey=${encodeURIComponent(API_KEY)}`;
+                }
                 
                 ws = new WebSocket(wsUrl, ["pcm16"]);
                 ws.binaryType = 'arraybuffer';
