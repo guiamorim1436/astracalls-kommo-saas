@@ -295,7 +295,7 @@
             } catch (e) {}
 
             setTimeout(() => {
-                window.parent.postMessage({ type: 'astracalls_call_ended', lead_id: leadId, duration: seconds }, '*');
+                window.parent.postMessage({ type: 'astracalls_call_ended', lead_id: leadId, duration: seconds }, '*'); setTimeout(() => { window.close(); }, 700);
             }, 800);
         }
 
