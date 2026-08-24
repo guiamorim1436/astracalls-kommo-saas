@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp Call - WebPhone</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background-color: #0b141a;
+            color: #e9edef;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            align-items: center;
+            padding: 24px 16px;
+            user-select: none;
+            overflow: hidden;
+        }
+        .top-info { text-align: center; width: 100%; margin-top: 10px; }
+        .avatar-box {
+            width: 84px;
+            height: 84px;
+            border-radius: 50%;
+            background: #111b21;
+            border: 2px solid #00a884;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 12px auto;
+            box-shadow: 0 8px 24px rgba(0, 168, 132, 0.25);
+        }
+        .avatar-icon { font-size: 40px; color: #00a884; }
+        .contact-title { font-size: 18px; font-weight: 600; color: #f1f5f9; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px; margin-left: auto; margin-right: auto; }
+        .contact-num { font-size: 14px; color: #94a3b8; margin-bottom: 8px; font-weight: 500; }
+        .call-badge {
+            font-size: 13px;
+            color: #34d399;
+            font-weight: 500;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: rgba(16, 185, 129, 0.1);
+            padding: 4px 12px;
+            border-radius: 20px;
+        }
+        .pulse-dot {
+            width: 8px;
+            height: 8px;
+            background: #34d399;
+            border-radius: 50%;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(0.95); opacity: 0.8; }
+            50% { transform: scale(1.4); opacity: 1; }
+            100% { transform: scale(0.95); opacity: 0.8; }
+        }
+        .timer-val {
+            font-size: 38px;
+            font-weight: 700;
+            color: #ffffff;
+            font-variant-numeric: tabular-nums;
+            margin: 20px 0;
+            letter-spacing: 1px;
+        }
+        .actions-row { display: flex; gap: 28px; margin-bottom: 15px; align-items: center; }
+        .ctrl-btn {
+            width: 62px;
+            height: 62px;
+            border-radius: 50%;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            outline: none;
+        }
+        .ctrl-btn:hover { transform: scale(1.08); }
+        .ctrl-btn:active { transform: scale(0.95); }
+        .btn-mic { background: #1e293b; color: #f8fafc; border: 1px solid #334155; }
+        .btn-mic.muted { background: #f59e0b; color: #ffffff; border-color: #f59e0b; }
+        .btn-end { background: #ef4444; color: #ffffff; box-shadow: 0 8px 20px rgba(239, 68, 68, 0.4); }
+        .btn-end:hover { background: #dc2626; }
+        .powered-by { font-size: 11px; color: #64748b; text-align: center; }
+    </style>
+</head>
+<body>
+    <div class="top-info">
+        <div class="avatar-box"><div class="avatar-icon">👤</div></div>
+        <div class="contact-title" id="name-txt">WhatsApp Call</div>
+        <div class="contact-num" id="phone-txt">Conectando...</div>
+        <div class="call-badge" id="badge-box">
+            <span class="pulse-dot"></span>
+            <span id="badge-txt">Iniciando chamada...</span>
+        </div>
+    </div>
+
+    <div class="timer-val" id="timer-box">00:00</div>
+
+    <div class="actions-row">
+        <button class="ctrl-btn btn-mic" id="mic-btn" title="Mutar Microfone">🎤</button>
+        <button class="ctrl-btn btn-end" id="end-btn" title="Desligar Chamada">📞</button>
+    </div>
+
+    <div class="powered-by">AstraCalls &bull; Kommo Integration</div>
+
+    <script>
+        const ASTRACALLS_SERVER = "https://atlascall-astracalls.okgklo.easypanel.host";
+        const API_KEY = "sua_chave_api_super_segura";
+
+        const params = new URLSearchParams(window.location.search);
+        const rawPhone = params.get('phone') || '';
+        const leadName = params.get('name') || 'Lead Kommo';
+        const leadId = params.get('lead_id') || '';
+        const callSessionId = params.get('session_id') || '';
+
+        let cleanPhone = rawPhone.replace(/\D/g, '');
+        if (cleanPhone.length <= 11 && !cleanPhone.startsWith('55')) {
+            cleanPhone = '55' + cleanPhone;
+        }
+
+        let sid = null;
+        let callId = null;
+        let timer = null;
+        let seconds = 0;
+        let audioCtx = null;
+        let micStream = null;
+        let ws = null;
+        let isTerminated = false;
+
+        function formatTimer(s) {
+            const m = Math.floor(s / 60);
+            const sec = s % 60;
+            return (m < 10 ? '0' : '') + m + ':' + (sec < 10 ? '0' : '') + sec;
+        }
+
+        async function startCall() {
+            document.getElementById('name-txt').textContent = leadName;
+            document.getElementById('phone-txt').textContent = '+' + cleanPhone;
+
+            try {
+                // 1. Obter Sessão Ativa do AstraCalls
+                const sResp = await fetch(ASTRACALLS_SERVER + '/api/sessions', { headers: { 'X-API-Key': API_KEY } });
+                const sData = await sResp.json();
+                if (!sData.sessions || sData.sessions.length === 0) {
+                    setBadget('WhatsApp Desconectado', '#f87171');
+                    return;
+                }
+                sid = sData.sessions[0].id;
+
+                // 2. Desbloquear Áudio do Navegador
+                micStream = await navigator.mediaDevices.getUserMedia({
+                    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 16000 }
+                });
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                if (audioCtx.state === 'suspended') {
+                    await audioCtx.resume();
+                }
+
+                // 3. Disparar Chamada no WhatsApp
+                setBadget('Chamando WhatsApp...', '#34d399');
+                const cResp = await fetch(`${ASTRACALLS_SERVER}/api/sessions/${sid}/calls`, {
+                    method: 'POST',
+                    headers: { 'X-API-Key': API_KEY, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ phone: cleanPhone, record: true, video: false })
+                });
+                const cData = await cResp.json();
+                callId = cData.call ? cData.call.callId : cData.callId;
+
+                // 4. WebSocket Áudio Bidirecional
+                const wsProto = ASTRACALLS_SERVER.startsWith('https') ? 'wss://' : 'ws://';
+                const wsHost = ASTRACALLS_SERVER.replace(/^https?:\/\//, '');
+                ws = new WebSocket(`${wsProto}${wsHost}/api/sessions/${sid}/calls/${callId}/ws`);
+                ws.binaryType = 'arraybuffer';
+
+                const source = audioCtx.createMediaStreamSource(micStream);
+                const proc = audioCtx.createScriptProcessor(2048, 1, 1);
+
+                proc.onaudioprocess = (e) => {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        const input = e.inputBuffer.getChannelData(0);
+                        const pcm16 = new Int16Array(input.length);
+                        for (let i = 0; i < input.length; i++) {
+                            const s = Math.max(-1, Math.min(1, input[i]));
+                            pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                        }
+                        ws.send(pcm16.buffer);
+                    }
+                };
+
+                ws.onmessage = async (event) => {
+                    if (event.data instanceof ArrayBuffer && audioCtx) {
+                        if (audioCtx.state === 'suspended') await audioCtx.resume();
+                        const pcm16 = new Int16Array(event.data);
+                        const float32 = new Float32Array(pcm16.length);
+                        for (let i = 0; i < pcm16.length; i++) {
+                            float32[i] = pcm16[i] / 32768.0;
+                        }
+                        const buf = audioCtx.createBuffer(1, float32.length, 16000);
+                        buf.getChannelData(0).set(float32);
+                        const playSrc = audioCtx.createBufferSource();
+                        playSrc.buffer = buf;
+                        playSrc.connect(audioCtx.destination);
+                        playSrc.start();
+                    }
+                };
+
+                source.connect(proc);
+                proc.connect(audioCtx.destination);
+
+                // 5. Iniciar Timer
+                timer = setInterval(() => {
+                    seconds++;
+                    document.getElementById('timer-box').textContent = formatTimer(seconds);
+                }, 1000);
+
+                setBadget('Em ligação', '#34d399');
+            } catch (err) {
+                console.error("Erro na chamada:", err);
+                setBadget('Falha na conexão', '#f87171');
+            }
+        }
+
+        function setBadget(text, color) {
+            document.getElementById('badge-txt').textContent = text;
+            if (color) document.getElementById('badge-box').style.color = color;
+        }
+
+        async function endCall() {
+            if (isTerminated) return;
+            isTerminated = true;
+            clearInterval(timer);
+
+            if (sid && callId) {
+                fetch(`${ASTRACALLS_SERVER}/api/sessions/${sid}/calls/${callId}`, {
+                    method: 'DELETE',
+                    headers: { 'X-API-Key': API_KEY }
+                }).catch(() => {});
+            }
+
+            if (ws) ws.close();
+            if (micStream) micStream.getTracks().forEach(t => t.stop());
+            if (audioCtx) audioCtx.close();
+
+            setBadget('Chamada Finalizada', '#94a3b8');
+
+            // Notifica o backend Vercel para gravar no Kommo com precisão
+            try {
+                await fetch('/api/call/end', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        callSessionId,
+                        phone: cleanPhone,
+                        duration: seconds,
+                        lead_id: leadId
+                    })
+                });
+            } catch (e) {
+                console.error("Sync error:", e);
+            }
+
+            // Notifica janela pai para fechar container
+            setTimeout(() => {
+                window.parent.postMessage({ type: 'astracalls_call_ended', lead_id: leadId, duration: seconds }, '*');
+            }, 1000);
+        }
+
+        document.getElementById('end-btn').addEventListener('click', endCall);
+        document.getElementById('mic-btn').addEventListener('click', function() {
+            if (micStream) {
+                const tr = micStream.getAudioTracks()[0];
+                if (tr) {
+                    tr.enabled = !tr.enabled;
+                    this.classList.toggle('muted', !tr.enabled);
+                }
+            }
+        });
+
+        document.body.addEventListener('click', () => {
+            if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+        });
+
+        window.addEventListener('DOMContentLoaded', startCall);
+    </script>
+</body>
+</html>

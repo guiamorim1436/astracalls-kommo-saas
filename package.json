@@ -1,0 +1,14 @@
+{
+  "name": "astracalls-kommo-saas",
+  "version": "1.0.0",
+  "description": "Backend Serverless Vercel para integracao AstraCalls + Kommo CRM",
+  "main": "api/health.js",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "vercel": "^39.0.0"
+  }
+}
