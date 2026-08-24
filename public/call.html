@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WhatsApp Call - WebPhone</title>
+    <title>WhatsApp Call - AstraCalls</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -112,6 +112,9 @@
     <script>
         const ASTRACALLS_SERVER = "https://atlascall-astracalls.okgklo.easypanel.host";
         const API_KEY = "sua_chave_api_super_segura";
+        const SAMPLE_RATE = 16000;
+        const FRAME_SAMPLES = 512;
+        const JITTER_CUSHION = 0.06; // 60ms
 
         const params = new URLSearchParams(window.location.search);
         const rawPhone = params.get('phone') || '';
@@ -128,10 +131,14 @@
         let callId = null;
         let timer = null;
         let seconds = 0;
-        let audioCtx = null;
-        let micStream = null;
-        let ws = null;
         let isTerminated = false;
+
+        // WSAudioBridge oficial
+        let ws = null;
+        let micStream = null;
+        let captureCtx = null;
+        let playbackCtx = null;
+        let playCursor = 0;
 
         function formatTimer(s) {
             const m = Math.floor(s / 60);
@@ -139,12 +146,57 @@
             return (m < 10 ? '0' : '') + m + ':' + (sec < 10 ? '0' : '') + sec;
         }
 
+        function setBadget(text, color) {
+            document.getElementById('badge-txt').textContent = text;
+            if (color) document.getElementById('badge-box').style.color = color;
+        }
+
+        function float32ToInt16LE(input) {
+            const out = new Int16Array(input.length);
+            for (let i = 0; i < input.length; i++) {
+                const s = Math.max(-1, Math.min(1, input[i]));
+                out[i] = s < 0 ? s * 32768 : s * 32767;
+            }
+            return out;
+        }
+
+        function playPCM(buffer) {
+            if (!playbackCtx) {
+                playbackCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+            }
+            if (playbackCtx.state === 'suspended') {
+                playbackCtx.resume();
+            }
+
+            const int16 = new Int16Array(buffer);
+            if (int16.length === 0) return;
+
+            const float32 = new Float32Array(int16.length);
+            for (let i = 0; i < int16.length; i++) {
+                float32[i] = int16[i] / 32768;
+            }
+
+            const audioBuf = playbackCtx.createBuffer(1, float32.length, SAMPLE_RATE);
+            audioBuf.copyToChannel(float32, 0);
+
+            const src = playbackCtx.createBufferSource();
+            src.buffer = audioBuf;
+            src.connect(playbackCtx.destination);
+
+            const now = playbackCtx.currentTime;
+            if (playCursor < now + 0.005) {
+                playCursor = now + JITTER_CUSHION;
+            }
+            src.start(playCursor);
+            playCursor += audioBuf.duration;
+        }
+
         async function startCall() {
             document.getElementById('name-txt').textContent = leadName;
             document.getElementById('phone-txt').textContent = '+' + cleanPhone;
 
             try {
-                // 1. Obter Sessão Ativa do AstraCalls
+                // 1. Obter Sessão Ativa
                 const sResp = await fetch(ASTRACALLS_SERVER + '/api/sessions', { headers: { 'X-API-Key': API_KEY } });
                 const sData = await sResp.json();
                 if (!sData.sessions || sData.sessions.length === 0) {
@@ -153,16 +205,12 @@
                 }
                 sid = sData.sessions[0].id;
 
-                // 2. Desbloquear Áudio do Navegador
+                // 2. Obter Microfone
                 micStream = await navigator.mediaDevices.getUserMedia({
-                    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 16000 }
+                    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: SAMPLE_RATE, channelCount: 1 }
                 });
-                audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-                if (audioCtx.state === 'suspended') {
-                    await audioCtx.resume();
-                }
 
-                // 3. Disparar Chamada no WhatsApp
+                // 3. Disparar Chamada no AstraCalls
                 setBadget('Chamando WhatsApp...', '#34d399');
                 const cResp = await fetch(`${ASTRACALLS_SERVER}/api/sessions/${sid}/calls`, {
                     method: 'POST',
@@ -172,46 +220,34 @@
                 const cData = await cResp.json();
                 callId = cData.call ? cData.call.callId : cData.callId;
 
-                // 4. WebSocket Áudio Bidirecional
+                // 4. Conectar WebSocket de Áudio
                 const wsProto = ASTRACALLS_SERVER.startsWith('https') ? 'wss://' : 'ws://';
                 const wsHost = ASTRACALLS_SERVER.replace(/^https?:\/\//, '');
                 ws = new WebSocket(`${wsProto}${wsHost}/api/sessions/${sid}/calls/${callId}/ws`);
                 ws.binaryType = 'arraybuffer';
 
-                const source = audioCtx.createMediaStreamSource(micStream);
-                const proc = audioCtx.createScriptProcessor(2048, 1, 1);
+                ws.onopen = () => {
+                    // Iniciar Captura de Microfone
+                    captureCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+                    const source = captureCtx.createMediaStreamSource(micStream);
+                    const proc = captureCtx.createScriptProcessor(FRAME_SAMPLES, 1, 1);
 
-                proc.onaudioprocess = (e) => {
-                    if (ws && ws.readyState === WebSocket.OPEN) {
-                        const input = e.inputBuffer.getChannelData(0);
-                        const pcm16 = new Int16Array(input.length);
-                        for (let i = 0; i < input.length; i++) {
-                            const s = Math.max(-1, Math.min(1, input[i]));
-                            pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                    proc.onaudioprocess = (ev) => {
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            const f32 = ev.inputBuffer.getChannelData(0);
+                            ws.send(float32ToInt16LE(f32).buffer);
                         }
-                        ws.send(pcm16.buffer);
-                    }
+                    };
+
+                    source.connect(proc);
+                    proc.connect(captureCtx.destination);
                 };
 
-                ws.onmessage = async (event) => {
-                    if (event.data instanceof ArrayBuffer && audioCtx) {
-                        if (audioCtx.state === 'suspended') await audioCtx.resume();
-                        const pcm16 = new Int16Array(event.data);
-                        const float32 = new Float32Array(pcm16.length);
-                        for (let i = 0; i < pcm16.length; i++) {
-                            float32[i] = pcm16[i] / 32768.0;
-                        }
-                        const buf = audioCtx.createBuffer(1, float32.length, 16000);
-                        buf.getChannelData(0).set(float32);
-                        const playSrc = audioCtx.createBufferSource();
-                        playSrc.buffer = buf;
-                        playSrc.connect(audioCtx.destination);
-                        playSrc.start();
+                ws.onmessage = (ev) => {
+                    if (ev.data instanceof ArrayBuffer) {
+                        playPCM(ev.data);
                     }
                 };
-
-                source.connect(proc);
-                proc.connect(audioCtx.destination);
 
                 // 5. Iniciar Timer
                 timer = setInterval(() => {
@@ -226,11 +262,6 @@
             }
         }
 
-        function setBadget(text, color) {
-            document.getElementById('badge-txt').textContent = text;
-            if (color) document.getElementById('badge-box').style.color = color;
-        }
-
         async function endCall() {
             if (isTerminated) return;
             isTerminated = true;
@@ -243,13 +274,13 @@
                 }).catch(() => {});
             }
 
-            if (ws) ws.close();
-            if (micStream) micStream.getTracks().forEach(t => t.stop());
-            if (audioCtx) audioCtx.close();
+            if (ws) { ws.close(); ws = null; }
+            if (captureCtx) { captureCtx.close().catch(() => {}); captureCtx = null; }
+            if (playbackCtx) { playbackCtx.close().catch(() => {}); playbackCtx = null; }
+            if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
 
             setBadget('Chamada Finalizada', '#94a3b8');
 
-            // Notifica o backend Vercel para gravar no Kommo com precisão
             try {
                 await fetch('/api/call/end', {
                     method: 'POST',
@@ -261,14 +292,11 @@
                         lead_id: leadId
                     })
                 });
-            } catch (e) {
-                console.error("Sync error:", e);
-            }
+            } catch (e) {}
 
-            // Notifica janela pai para fechar container
             setTimeout(() => {
                 window.parent.postMessage({ type: 'astracalls_call_ended', lead_id: leadId, duration: seconds }, '*');
-            }, 1000);
+            }, 800);
         }
 
         document.getElementById('end-btn').addEventListener('click', endCall);
@@ -283,7 +311,8 @@
         });
 
         document.body.addEventListener('click', () => {
-            if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+            if (playbackCtx && playbackCtx.state === 'suspended') playbackCtx.resume();
+            if (captureCtx && captureCtx.state === 'suspended') captureCtx.resume();
         });
 
         window.addEventListener('DOMContentLoaded', startCall);
