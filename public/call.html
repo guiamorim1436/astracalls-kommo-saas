@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WhatsApp Call - AstraCalls</title>
+    <title>WhatsApp WebPhone - AstraCalls</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -21,8 +21,8 @@
         }
         .top-info { text-align: center; width: 100%; margin-top: 10px; }
         .avatar-box {
-            width: 84px;
-            height: 84px;
+            width: 86px;
+            height: 86px;
             border-radius: 50%;
             background: #111b21;
             border: 2px solid #00a884;
@@ -32,7 +32,7 @@
             margin: 0 auto 12px auto;
             box-shadow: 0 8px 24px rgba(0, 168, 132, 0.25);
         }
-        .avatar-icon { font-size: 40px; color: #00a884; }
+        .avatar-icon { font-size: 42px; color: #00a884; }
         .contact-title { font-size: 18px; font-weight: 600; color: #f1f5f9; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px; margin-left: auto; margin-right: auto; }
         .contact-num { font-size: 14px; color: #94a3b8; margin-bottom: 8px; font-weight: 500; }
         .call-badge {
@@ -63,8 +63,16 @@
             font-weight: 700;
             color: #ffffff;
             font-variant-numeric: tabular-nums;
-            margin: 20px 0;
+            margin: 15px 0;
             letter-spacing: 1px;
+        }
+        .audio-indicator {
+            font-size: 12px;
+            color: #10b981;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
         }
         .actions-row { display: flex; gap: 28px; margin-bottom: 15px; align-items: center; }
         .ctrl-btn {
@@ -101,20 +109,23 @@
     </div>
 
     <div class="timer-val" id="timer-box">00:00</div>
+    <div class="audio-indicator" id="audio-ind">🔊 Áudio Conectado</div>
 
     <div class="actions-row">
         <button class="ctrl-btn btn-mic" id="mic-btn" title="Mutar Microfone">🎤</button>
         <button class="ctrl-btn btn-end" id="end-btn" title="Desligar Chamada">📞</button>
     </div>
 
-    <div class="powered-by">AstraCalls &bull; Kommo Integration</div>
+    <div class="powered-by">AstraCalls &bull; Kommo WebPhone</div>
+
+    <audio id="remoteAudio" autoplay playsinline style="display:none;"></audio>
 
     <script>
         const ASTRACALLS_SERVER = "https://atlascall-astracalls.okgklo.easypanel.host";
         const API_KEY = "sua_chave_api_super_segura";
         const SAMPLE_RATE = 16000;
         const FRAME_SAMPLES = 512;
-        const JITTER_CUSHION = 0.06; // 60ms
+        const JITTER_CUSHION = 0.06;
 
         const params = new URLSearchParams(window.location.search);
         const rawPhone = params.get('phone') || '';
@@ -133,7 +144,6 @@
         let seconds = 0;
         let isTerminated = false;
 
-        // WSAudioBridge oficial
         let ws = null;
         let micStream = null;
         let captureCtx = null;
@@ -196,7 +206,7 @@
             document.getElementById('phone-txt').textContent = '+' + cleanPhone;
 
             try {
-                // 1. Obter Sessão Ativa
+                // 1. Obter Sessão Ativa do WhatsApp
                 const sResp = await fetch(ASTRACALLS_SERVER + '/api/sessions', { headers: { 'X-API-Key': API_KEY } });
                 const sData = await sResp.json();
                 if (!sData.sessions || sData.sessions.length === 0) {
@@ -205,7 +215,7 @@
                 }
                 sid = sData.sessions[0].id;
 
-                // 2. Obter Microfone
+                // 2. Microfone
                 micStream = await navigator.mediaDevices.getUserMedia({
                     audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: SAMPLE_RATE, channelCount: 1 }
                 });
@@ -220,15 +230,16 @@
                 const cData = await cResp.json();
                 callId = cData.call ? cData.call.callId : cData.callId;
 
-                // 4. Conectar WebSocket de Áudio
+                // 4. Conectar WebSocket de Voz em Tempo Real
                 const wsProto = ASTRACALLS_SERVER.startsWith('https') ? 'wss://' : 'ws://';
                 const wsHost = ASTRACALLS_SERVER.replace(/^https?:\/\//, '');
                 ws = new WebSocket(`${wsProto}${wsHost}/api/sessions/${sid}/calls/${callId}/ws`);
                 ws.binaryType = 'arraybuffer';
 
                 ws.onopen = () => {
-                    // Iniciar Captura de Microfone
                     captureCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+                    if (captureCtx.state === 'suspended') captureCtx.resume();
+
                     const source = captureCtx.createMediaStreamSource(micStream);
                     const proc = captureCtx.createScriptProcessor(FRAME_SAMPLES, 1, 1);
 
@@ -295,7 +306,7 @@
             } catch (e) {}
 
             setTimeout(() => {
-                window.parent.postMessage({ type: 'astracalls_call_ended', lead_id: leadId, duration: seconds }, '*'); setTimeout(() => { window.close(); }, 700);
+                window.close();
             }, 800);
         }
 
